@@ -22,6 +22,7 @@ class BroadcastApp:
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.worker: threading.Thread | None = None
+        self.stop_event: threading.Event | None = None
 
         self._build_layout()
         self._schedule_log_check()
@@ -88,8 +89,15 @@ class BroadcastApp:
         dry_run_check = ttk.Checkbutton(container, text="Тестовый прогон (без отправки сообщений)", variable=self.dry_run_var)
         dry_run_check.grid(column=0, row=6, columnspan=2, sticky="w", pady=(12, 0))
 
-        self.start_button = ttk.Button(container, text="Запустить рассылку", command=self.start_broadcast)
-        self.start_button.grid(column=2, row=6, sticky="e", pady=(12, 0))
+        buttons_frame = ttk.Frame(container)
+        buttons_frame.grid(column=2, row=6, sticky="e", pady=(12, 0))
+
+        self.start_button = ttk.Button(buttons_frame, text="Запустить", command=self.start_broadcast)
+        self.start_button.grid(column=0, row=0, padx=(0, 8))
+
+        self.stop_button = ttk.Button(buttons_frame, text="Остановить", command=self.stop_broadcast)
+        self.stop_button.grid(column=1, row=0)
+        self.stop_button.state(["disabled"])
 
         logs_label = ttk.Label(container, text="Журнал работы:")
         logs_label.grid(column=0, row=7, sticky="w", columnspan=3, pady=(16, 4))
@@ -139,11 +147,22 @@ class BroadcastApp:
 
         self._append_log("Стартуем рассылку...")
         self.start_button.state(["disabled"])
+        self.stop_button.state(["!disabled"])
+        self.stop_event = threading.Event()
 
         def worker() -> None:
             try:
-                asyncio.run(run_schedule(config, logger=self.log_queue.put))
-                self.log_queue.put("Рассылка завершена.")
+                asyncio.run(
+                    run_schedule(
+                        config,
+                        logger=self.log_queue.put,
+                        stop_event=self.stop_event,
+                    )
+                )
+                if self.stop_event and self.stop_event.is_set():
+                    self.log_queue.put("Рассылка остановлена пользователем.")
+                else:
+                    self.log_queue.put("Рассылка завершена.")
             except Exception as exc:  # pragma: no cover - UI feedback path
                 self.log_queue.put(f"Ошибка: {exc}")
             finally:
@@ -154,6 +173,8 @@ class BroadcastApp:
 
     def _on_worker_complete(self) -> None:
         self.start_button.state(["!disabled"])
+        self.stop_button.state(["disabled"])
+        self.stop_event = None
 
     def _append_log(self, message: str) -> None:
         self.logs_output.configure(state=tk.NORMAL)
@@ -169,6 +190,15 @@ class BroadcastApp:
         while not self.log_queue.empty():
             message = self.log_queue.get_nowait()
             self._append_log(message)
+
+    def stop_broadcast(self) -> None:
+        if self.stop_event and not self.stop_event.is_set():
+            self.stop_event.set()
+            self._append_log("Запрошена остановка рассылки...")
+        elif self.worker and self.worker.is_alive():
+            self._append_log("Остановка уже запрошена, ожидаем завершение...")
+        else:
+            messagebox.showinfo("Рассылка", "Нет активной рассылки для остановки.")
 
 
 def main() -> None:

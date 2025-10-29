@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Iterable, List, Optional, Sequence
@@ -221,12 +222,39 @@ async def collect_chats(client: TelegramClient, dialog_filter):
     return unique
 
 
+async def _wait_with_stop(
+    seconds: float,
+    stop_event: threading.Event | None,
+    logger: LogCallback | None,
+) -> bool:
+    """Sleep for ``seconds`` seconds, checking ``stop_event`` every second.
+
+    Returns ``True`` if the wait was interrupted due to a stop request.
+    """
+
+    if seconds <= 0:
+        return False
+    if stop_event is None:
+        await asyncio.sleep(seconds)
+        return False
+
+    remaining = seconds
+    while remaining > 0:
+        if stop_event.is_set():
+            return True
+        interval = min(1.0, remaining)
+        await asyncio.sleep(interval)
+        remaining -= interval
+    return stop_event.is_set()
+
+
 async def broadcast_once(
     client: TelegramClient,
     chats,
     message: str,
     dry_run: bool = False,
     logger: LogCallback | None = None,
+    stop_event: threading.Event | None = None,
 ) -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if dry_run:
@@ -240,6 +268,17 @@ async def broadcast_once(
 
     _emit(logger, f"[{timestamp}] Sending message to {len(chats)} chats...")
     for chat in chats:
+        if stop_event and stop_event.is_set():
+            _emit(logger, "Рассылка остановлена пользователем перед отправкой сообщения.")
+            return
+
+        chat_name = getattr(chat, "title", getattr(chat, "username", "chat"))
+        _emit(logger, f" Ожидаем 30 секунд перед отправкой в {chat_name}...")
+        interrupted = await _wait_with_stop(30, stop_event, logger)
+        if interrupted:
+            _emit(logger, "Рассылка остановлена пользователем перед отправкой сообщения.")
+            return
+
         try:
             await client.send_message(chat, message)
             _emit(
@@ -253,7 +292,11 @@ async def broadcast_once(
             )
 
 
-async def run_schedule(config: BroadcastConfig, logger: LogCallback | None = None) -> None:
+async def run_schedule(
+    config: BroadcastConfig,
+    logger: LogCallback | None = None,
+    stop_event: threading.Event | None = None,
+) -> None:
     if load_dotenv is not None:
         load_dotenv()
     else:
@@ -278,14 +321,21 @@ async def run_schedule(config: BroadcastConfig, logger: LogCallback | None = Non
             if wait_hours > 0:
                 wait_seconds = wait_hours * 3600
                 _emit(logger, f"Waiting {wait_hours} hour(s) before next broadcast...")
-                await asyncio.sleep(wait_seconds)
+                interrupted = await _wait_with_stop(wait_seconds, stop_event, logger)
+                if interrupted:
+                    _emit(logger, "Расписание остановлено пользователем.")
+                    return
             await broadcast_once(
                 client,
                 chats,
                 config.message,
                 dry_run=config.dry_run,
                 logger=logger,
+                stop_event=stop_event,
             )
+            if stop_event and stop_event.is_set():
+                _emit(logger, "Рассылка остановлена пользователем.")
+                return
             previous = delay
 
 
