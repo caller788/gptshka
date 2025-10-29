@@ -109,8 +109,9 @@ def _resolve_credential(value: str | int | None, env_name: str) -> str:
 
 
 async def resolve_folder_id(client: TelegramClient, folder_title: str) -> int:
-    response: Sequence = await client(functions.messages.GetDialogFiltersRequest())
-    for dialog_filter in response:
+    response = await client(functions.messages.GetDialogFiltersRequest())
+    filters: Sequence = getattr(response, "filters", ())
+    for dialog_filter in filters:
         if getattr(dialog_filter, "title", "").lower() == folder_title.lower():
             return dialog_filter.id
     raise ValueError(f"Folder '{folder_title}' was not found in your Telegram account.")
