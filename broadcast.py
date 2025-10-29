@@ -1,19 +1,37 @@
 """Telegram broadcast scheduler.
 
-This script sends a message to every dialog in a Telegram folder at
-user-defined hourly intervals.
+This module exposes both a command line interface and reusable helpers for
+sending a message to every dialog in a Telegram folder at user-defined hourly
+intervals. The helpers are shared with the desktop GUI so that both
+experiences stay in sync.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 import os
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable, List, Sequence
+from typing import Callable, Iterable, List, Optional, Sequence
 
 from dotenv import load_dotenv
 from telethon import TelegramClient, functions
 from telethon.errors import RPCError
+
+LogCallback = Callable[[str], None]
+
+
+@dataclass
+class BroadcastConfig:
+    """Input data required to execute a broadcast schedule."""
+
+    message: str
+    folder: str
+    delays: Iterable[int]
+    session: str = os.getenv("TELEGRAM_SESSION", "broadcast")
+    api_id: Optional[int] = None
+    api_hash: Optional[str] = None
+    dry_run: bool = False
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,6 +79,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _emit(logger: LogCallback | None, message: str) -> None:
+    (logger or print)(message)
+
+
 def _normalise_delays(delays: Iterable[int]) -> List[int]:
     unique_delays = sorted({int(delay) for delay in delays})
     for delay in unique_delays:
@@ -93,33 +115,51 @@ async def collect_chats(client: TelegramClient, folder_id: int):
     return [dialog.entity for dialog in dialogs]
 
 
-async def broadcast_once(client: TelegramClient, chats, message: str, dry_run: bool = False) -> None:
+async def broadcast_once(
+    client: TelegramClient,
+    chats,
+    message: str,
+    dry_run: bool = False,
+    logger: LogCallback | None = None,
+) -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if dry_run:
-        print(f"[DRY RUN {timestamp}] Would send to {len(chats)} chats:")
+        _emit(logger, f"[DRY RUN {timestamp}] Would send to {len(chats)} chats:")
         for chat in chats:
-            print(f" - {getattr(chat, 'title', getattr(chat, 'username', 'Unknown chat'))}")
+            _emit(
+                logger,
+                f" - {getattr(chat, 'title', getattr(chat, 'username', 'Unknown chat'))}",
+            )
         return
 
-    print(f"[{timestamp}] Sending message to {len(chats)} chats...")
+    _emit(logger, f"[{timestamp}] Sending message to {len(chats)} chats...")
     for chat in chats:
         try:
             await client.send_message(chat, message)
-            print(f" ✓ Sent to {getattr(chat, 'title', getattr(chat, 'username', 'chat'))}")
+            _emit(
+                logger,
+                f" ✓ Sent to {getattr(chat, 'title', getattr(chat, 'username', 'chat'))}",
+            )
         except RPCError as error:
-            print(f" ✗ Failed to send to {getattr(chat, 'title', getattr(chat, 'username', 'chat'))}: {error}")
+            _emit(
+                logger,
+                f" ✗ Failed to send to {getattr(chat, 'title', getattr(chat, 'username', 'chat'))}: {error}",
+            )
 
 
-async def schedule_broadcast(args: argparse.Namespace) -> None:
+async def run_schedule(config: BroadcastConfig, logger: LogCallback | None = None) -> None:
     load_dotenv()
 
-    api_id = int(_resolve_credential(args.api_id, "TELEGRAM_API_ID"))
-    api_hash = _resolve_credential(args.api_hash, "TELEGRAM_API_HASH")
+    api_id_value = config.api_id if config.api_id is not None else os.getenv("TELEGRAM_API_ID")
+    api_hash_value = config.api_hash or os.getenv("TELEGRAM_API_HASH")
 
-    delays = _normalise_delays(args.delays)
+    api_id = int(_resolve_credential(api_id_value, "TELEGRAM_API_ID"))
+    api_hash = _resolve_credential(api_hash_value, "TELEGRAM_API_HASH")
 
-    async with TelegramClient(args.session, api_id, api_hash) as client:
-        folder_id = await resolve_folder_id(client, args.folder)
+    delays = _normalise_delays(config.delays)
+
+    async with TelegramClient(config.session, api_id, api_hash) as client:
+        folder_id = await resolve_folder_id(client, config.folder)
         chats = await collect_chats(client, folder_id)
 
         previous = 0
@@ -127,15 +167,34 @@ async def schedule_broadcast(args: argparse.Namespace) -> None:
             wait_hours = delay - previous
             if wait_hours > 0:
                 wait_seconds = wait_hours * 3600
-                print(f"Waiting {wait_hours} hour(s) before next broadcast...")
+                _emit(logger, f"Waiting {wait_hours} hour(s) before next broadcast...")
                 await asyncio.sleep(wait_seconds)
-            await broadcast_once(client, chats, args.message, dry_run=args.dry_run)
+            await broadcast_once(
+                client,
+                chats,
+                config.message,
+                dry_run=config.dry_run,
+                logger=logger,
+            )
             previous = delay
+
+
+def config_from_args(args: argparse.Namespace) -> BroadcastConfig:
+    return BroadcastConfig(
+        message=args.message,
+        folder=args.folder,
+        delays=args.delays,
+        session=args.session,
+        api_id=args.api_id,
+        api_hash=args.api_hash,
+        dry_run=args.dry_run,
+    )
 
 
 def main() -> None:
     args = parse_args()
-    asyncio.run(schedule_broadcast(args))
+    config = config_from_args(args)
+    asyncio.run(run_schedule(config, logger=print))
 
 
 if __name__ == "__main__":
