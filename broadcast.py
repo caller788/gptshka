@@ -21,8 +21,9 @@ try:  # pragma: no cover - exercised indirectly via runtime behaviour
     from dotenv import load_dotenv
 except ModuleNotFoundError:  # pragma: no cover - depends on local environment
     load_dotenv = None
-from telethon import TelegramClient, functions
+from telethon import TelegramClient, functions, utils
 from telethon.errors import RPCError
+from telethon.tl import types
 
 LogCallback = Callable[[str], None]
 
@@ -108,7 +109,7 @@ def _resolve_credential(value: str | int | None, env_name: str) -> str:
         ) from exc
 
 
-async def resolve_folder_id(client: TelegramClient, folder_title: str) -> int:
+async def resolve_folder(client: TelegramClient, folder_title: str):
     response = await client(functions.messages.GetDialogFiltersRequest())
     filters: Sequence = getattr(response, "filters", ())
     for dialog_filter in filters:
@@ -116,20 +117,108 @@ async def resolve_folder_id(client: TelegramClient, folder_title: str) -> int:
         if not isinstance(raw_title, str):
             raw_title = getattr(raw_title, "text", getattr(raw_title, "string", str(raw_title)))
         if raw_title.lower() == folder_title.lower():
-            return dialog_filter.id
+            return dialog_filter
     raise ValueError(f"Folder '{folder_title}' was not found in your Telegram account.")
 
 
-async def collect_chats(client: TelegramClient, folder_id: int):
-    """Return dialogs that belong to ``folder_id``.
+def _peer_ids(peers: Optional[Sequence]) -> set[int]:
+    ids: set[int] = set()
+    if not peers:
+        return ids
+    for peer in peers:
+        try:
+            ids.add(utils.get_peer_id(peer))
+        except (TypeError, ValueError):
+            continue
+    return ids
 
-    Telegram occasionally raises ``GetDialogsRequest`` errors when the ``folder``
-    parameter is provided, even if the folder exists. To avoid relying on that
-    behaviour we fetch all dialogs and filter them locally by ``folder_id``.
+
+def _is_muted(dialog) -> bool:
+    settings = getattr(dialog.dialog, "notify_settings", None)
+    mute_until = getattr(settings, "mute_until", None)
+    if not mute_until:
+        return False
+    # Telegram uses large sentinel values for "mute forever"; any non-zero value
+    # indicates that the dialog is muted for our purposes.
+    return bool(mute_until)
+
+
+def _matches_category(dialog, category_flags: dict[str, bool]) -> bool:
+    entity = dialog.entity
+
+    if category_flags.get("contacts") and isinstance(entity, types.User) and getattr(entity, "contact", False):
+        return True
+    if category_flags.get("non_contacts") and isinstance(entity, types.User) and not getattr(entity, "contact", False):
+        return True
+    if category_flags.get("bots") and isinstance(entity, types.User) and getattr(entity, "bot", False):
+        return True
+    if category_flags.get("groups") and dialog.is_group:
+        return True
+    if category_flags.get("broadcasts") and isinstance(entity, types.Channel) and getattr(entity, "broadcast", False):
+        return True
+
+    return False
+
+
+async def collect_chats(client: TelegramClient, dialog_filter):
+    """Return dialogs that belong to ``dialog_filter``.
+
+    Telegram exposes folder membership via chat filters. To find chats we
+    mirror the client-side filtering logic locally: explicitly included peers
+    and chats matching the category toggles are accepted unless they are
+    excluded or filtered out by the folder options.
     """
 
-    dialogs = await client.get_dialogs()
-    return [dialog.entity for dialog in dialogs if getattr(dialog, "folder_id", None) == folder_id]
+    include_ids = _peer_ids(getattr(dialog_filter, "include_peers", None))
+    include_ids |= _peer_ids(getattr(dialog_filter, "pinned_peers", None))
+    exclude_ids = _peer_ids(getattr(dialog_filter, "exclude_peers", None))
+
+    category_flags: dict[str, bool] = {}
+    if isinstance(dialog_filter, types.DialogFilter):
+        category_flags = {
+            "contacts": getattr(dialog_filter, "contacts", False),
+            "non_contacts": getattr(dialog_filter, "non_contacts", False),
+            "groups": getattr(dialog_filter, "groups", False),
+            "broadcasts": getattr(dialog_filter, "broadcasts", False),
+            "bots": getattr(dialog_filter, "bots", False),
+        }
+
+    include_all_by_default = not category_flags and not include_ids
+
+    exclude_archived = getattr(dialog_filter, "exclude_archived", False)
+    exclude_muted = getattr(dialog_filter, "exclude_muted", False)
+    exclude_read = getattr(dialog_filter, "exclude_read", False)
+
+    dialogs = await client.get_dialogs(limit=None)
+    matched = []
+    for dialog in dialogs:
+        peer_id = getattr(dialog, "id", None)
+        if peer_id is None:
+            continue
+        if peer_id in exclude_ids:
+            continue
+        if peer_id in include_ids:
+            matched.append(dialog.entity)
+            continue
+        if exclude_archived and getattr(dialog, "archived", False):
+            continue
+        if exclude_muted and _is_muted(dialog):
+            continue
+        if exclude_read and getattr(dialog.dialog, "unread_count", 0) == 0:
+            continue
+        if include_all_by_default or _matches_category(dialog, category_flags):
+            matched.append(dialog.entity)
+
+    # Deduplicate while preserving order.
+    seen = set()
+    unique = []
+    for chat in matched:
+        peer_id = utils.get_peer_id(chat)
+        if peer_id in seen:
+            continue
+        seen.add(peer_id)
+        unique.append(chat)
+    return unique
 
 
 async def broadcast_once(
@@ -179,8 +268,9 @@ async def run_schedule(config: BroadcastConfig, logger: LogCallback | None = Non
     delays = _normalise_delays(config.delays)
 
     async with TelegramClient(config.session, api_id, api_hash) as client:
-        folder_id = await resolve_folder_id(client, config.folder)
-        chats = await collect_chats(client, folder_id)
+        dialog_filter = await resolve_folder(client, config.folder)
+        chats = await collect_chats(client, dialog_filter)
+        _emit(logger, f"Найдено {len(chats)} чатов в папке '{config.folder}'.")
 
         previous = 0
         for delay in delays:
