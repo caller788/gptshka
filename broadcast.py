@@ -112,7 +112,10 @@ async def resolve_folder_id(client: TelegramClient, folder_title: str) -> int:
     response = await client(functions.messages.GetDialogFiltersRequest())
     filters: Sequence = getattr(response, "filters", ())
     for dialog_filter in filters:
-        if getattr(dialog_filter, "title", "").lower() == folder_title.lower():
+        raw_title = getattr(dialog_filter, "title", "")
+        if not isinstance(raw_title, str):
+            raw_title = getattr(raw_title, "text", getattr(raw_title, "string", str(raw_title)))
+        if raw_title.lower() == folder_title.lower():
             return dialog_filter.id
     raise ValueError(f"Folder '{folder_title}' was not found in your Telegram account.")
 
