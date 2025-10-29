@@ -34,6 +34,11 @@
    pip install -r requirements.txt
    ```
 
+   > Если пакет `python-dotenv` недоступен (например, при ручной установке только `telethon`),
+   > скрипт продолжит работать, но будет использовать только переменные окружения. В этом
+   > случае убедитесь, что `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` и `TELEGRAM_SESSION` заданы
+   > системно или через параметры запуска.
+
 5. **Получите ключи Telegram API** (`api_id` и `api_hash`) в [кабинете разработчика Telegram](https://my.telegram.org/apps).
 
 6. **Создайте файл конфигурации `.env`:**

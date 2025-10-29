@@ -14,7 +14,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Iterable, List, Optional, Sequence
 
-from dotenv import load_dotenv
+# ``python-dotenv`` is optional: if it isn't installed we skip auto-loading ``.env`` files
+# and rely purely on the process environment variables. This keeps the broadcaster usable
+# even in minimal deployments where only ``telethon`` is installed.
+try:  # pragma: no cover - exercised indirectly via runtime behaviour
+    from dotenv import load_dotenv
+except ModuleNotFoundError:  # pragma: no cover - depends on local environment
+    load_dotenv = None
 from telethon import TelegramClient, functions
 from telethon.errors import RPCError
 
@@ -148,7 +154,10 @@ async def broadcast_once(
 
 
 async def run_schedule(config: BroadcastConfig, logger: LogCallback | None = None) -> None:
-    load_dotenv()
+    if load_dotenv is not None:
+        load_dotenv()
+    else:
+        _emit(logger, "python-dotenv не установлен — пропускаем загрузку .env")
 
     api_id_value = config.api_id if config.api_id is not None else os.getenv("TELEGRAM_API_ID")
     api_hash_value = config.api_hash or os.getenv("TELEGRAM_API_HASH")
