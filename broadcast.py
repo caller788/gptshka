@@ -121,8 +121,15 @@ async def resolve_folder_id(client: TelegramClient, folder_title: str) -> int:
 
 
 async def collect_chats(client: TelegramClient, folder_id: int):
-    dialogs = await client.get_dialogs(folder=folder_id)
-    return [dialog.entity for dialog in dialogs]
+    """Return dialogs that belong to ``folder_id``.
+
+    Telegram occasionally raises ``GetDialogsRequest`` errors when the ``folder``
+    parameter is provided, even if the folder exists. To avoid relying on that
+    behaviour we fetch all dialogs and filter them locally by ``folder_id``.
+    """
+
+    dialogs = await client.get_dialogs()
+    return [dialog.entity for dialog in dialogs if getattr(dialog, "folder_id", None) == folder_id]
 
 
 async def broadcast_once(
