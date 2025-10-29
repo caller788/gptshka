@@ -11,21 +11,37 @@
 
 ## Установка
 
-1. Установите зависимости:
+1. **Установите Python и Git.** Скрипт протестирован с Python 3.10+, но должен работать и на более новых версиях.
+
+2. **Склонируйте репозиторий и перейдите в директорию проекта:**
+
+   ```bash
+   git clone <url-репозитория>
+   cd gptshka
+   ```
+
+3. **(Опционально) Создайте и активируйте виртуальное окружение:**
+
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # Windows: .venv\Scripts\activate
+   ```
+
+4. **Установите зависимости:**
 
    ```bash
    pip install -r requirements.txt
    ```
 
-2. Получите `api_id` и `api_hash` в [кабинете разработчика Telegram](https://my.telegram.org/apps).
+5. **Получите ключи Telegram API** (`api_id` и `api_hash`) в [кабинете разработчика Telegram](https://my.telegram.org/apps).
 
-3. Создайте файл `.env` в корне проекта и укажите учетные данные:
+6. **Создайте файл конфигурации `.env`:**
 
-   ```dotenv
-   TELEGRAM_API_ID=123456
-   TELEGRAM_API_HASH=abcdef1234567890abcdef1234567890
-   TELEGRAM_SESSION=broadcast_session  # опционально, имя файла сессии
+   ```bash
+   cp .env.example .env
    ```
+
+   Откройте `.env` любым редактором и укажите значения своих `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, а при необходимости измените имя файла сессии (`TELEGRAM_SESSION`).
 
 ## Использование
 
