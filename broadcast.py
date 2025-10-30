@@ -45,6 +45,7 @@ class BroadcastConfig:
     dry_run: bool = False
     access_key: Optional[str] = None
     keys_file: Optional[str] = None
+    keys_cache: Optional[str] = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -97,6 +98,13 @@ def parse_args() -> argparse.Namespace:
         "--keys-file",
         help="Path to the hashed key store. Defaults to BROADCAST_KEYS_FILE environment variable.",
     )
+    parser.add_argument(
+        "--keys-cache",
+        help=(
+            "Path to store accepted key hashes locally. Defaults to BROADCAST_KEYS_CACHE environment variable "
+            "or <keys-file>.accepted."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -145,10 +153,18 @@ def _load_hashed_keys(store: Path) -> list[str]:
     return cleaned
 
 
+def _load_cached_hashes(cache_path: Path) -> list[str]:
+    if not cache_path.exists():
+        return []
+    return _load_hashed_keys(cache_path)
+
+
 def _consume_access_key(
     access_key: str | None,
     keys_file: str | os.PathLike[str] | None,
     logger: LogCallback | None,
+    *,
+    keys_cache: str | os.PathLike[str] | None = None,
 ) -> None:
     if not keys_file:
         raise RuntimeError(
@@ -157,7 +173,17 @@ def _consume_access_key(
 
     store = _normalise_key_store(keys_file)
 
+    if keys_cache:
+        cache_path = Path(keys_cache).expanduser()
+    else:
+        cache_path = store.with_suffix(store.suffix + ".accepted")
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cached_hashes = _load_cached_hashes(cache_path)
+
     if not access_key:
+        if cached_hashes:
+            _emit(logger, "Найден ранее подтвержденный ключ. Продолжаем работу.")
+            return
         raise RuntimeError(
             "Не указан одноразовый ключ доступа. Добавьте --access-key или переменную ACCESS_KEY.",
         )
@@ -166,6 +192,9 @@ def _consume_access_key(
     keys = _load_hashed_keys(store)
 
     if hashed_key not in keys:
+        if hashed_key in cached_hashes:
+            _emit(logger, "Используется ранее подтвержденный ключ.")
+            return
         raise RuntimeError("Одноразовый ключ недействителен или уже был использован.")
 
     keys.remove(hashed_key)
@@ -181,6 +210,10 @@ def _consume_access_key(
             os.remove(temp_path)
         except FileNotFoundError:
             pass
+
+    if hashed_key not in cached_hashes:
+        cached_hashes.append(hashed_key)
+        cache_path.write_text("\n".join(cached_hashes) + "\n", encoding="utf-8")
 
     _emit(logger, "Одноразовый ключ принят. Продолжаем работу.")
 
@@ -387,7 +420,13 @@ async def run_schedule(
 
     effective_keys_file = config.keys_file or os.getenv("BROADCAST_KEYS_FILE")
     effective_access_key = config.access_key or os.getenv("ACCESS_KEY")
-    _consume_access_key(effective_access_key, effective_keys_file, logger)
+    effective_keys_cache = config.keys_cache or os.getenv("BROADCAST_KEYS_CACHE")
+    _consume_access_key(
+        effective_access_key,
+        effective_keys_file,
+        logger,
+        keys_cache=effective_keys_cache,
+    )
 
     async with TelegramClient(config.session, api_id, api_hash) as client:
         dialog_filter = await resolve_folder(client, config.folder)
@@ -429,6 +468,7 @@ def config_from_args(args: argparse.Namespace) -> BroadcastConfig:
         dry_run=args.dry_run,
         access_key=args.access_key,
         keys_file=args.keys_file,
+        keys_cache=args.keys_cache,
     )
 
 

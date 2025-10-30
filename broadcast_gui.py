@@ -102,6 +102,13 @@ class BroadcastApp:
         keys_file_entry = ttk.Entry(container, textvariable=self.keys_file_var)
         keys_file_entry.grid(column=1, row=7, sticky="ew", padx=(12, 12), pady=(0, 12))
 
+        keys_cache_label = ttk.Label(container, text="Где хранить подтвержденный ключ (опционально):")
+        keys_cache_label.grid(column=2, row=6, sticky="w", pady=(0, 4))
+
+        self.keys_cache_var = tk.StringVar(value=os.getenv("BROADCAST_KEYS_CACHE", ""))
+        keys_cache_entry = ttk.Entry(container, textvariable=self.keys_cache_var)
+        keys_cache_entry.grid(column=2, row=7, sticky="ew", pady=(0, 12))
+
         dry_run_check = ttk.Checkbutton(container, text="Тестовый прогон (без отправки сообщений)", variable=self.dry_run_var)
         dry_run_check.grid(column=0, row=8, columnspan=2, sticky="w", pady=(12, 0))
 
@@ -151,12 +158,9 @@ class BroadcastApp:
             messagebox.showerror("Ошибка", "API ID должно быть числом.")
             return
 
-        access_key = self.access_key_var.get().strip()
-        if not access_key:
-            messagebox.showerror("Ошибка", "Введите одноразовый ключ доступа.")
-            return
-
+        access_key = self.access_key_var.get().strip() or None
         keys_file = self.keys_file_var.get().strip() or None
+        keys_cache = self.keys_cache_var.get().strip() or None
 
         config = BroadcastConfig(
             message=message,
@@ -168,6 +172,7 @@ class BroadcastApp:
             dry_run=self.dry_run_var.get(),
             access_key=access_key,
             keys_file=keys_file,
+            keys_cache=keys_cache,
         )
 
         self._append_log("Стартуем рассылку...")
