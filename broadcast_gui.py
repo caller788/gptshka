@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import queue
 import threading
 import tkinter as tk
@@ -36,8 +37,9 @@ class BroadcastApp:
         container.grid(sticky="nsew")
         for idx in range(3):
             container.columnconfigure(idx, weight=1)
-        container.rowconfigure(6, weight=1)
-        container.rowconfigure(8, weight=1)
+        container.rowconfigure(1, weight=1)
+        container.rowconfigure(10, weight=1)
+        container.rowconfigure(11, weight=1)
 
         message_label = ttk.Label(container, text="Сообщение для рассылки:")
         message_label.grid(column=0, row=0, sticky="w", columnspan=3, pady=(0, 4))
@@ -86,11 +88,25 @@ class BroadcastApp:
         self.delays_listbox.grid(column=2, row=3, rowspan=3, sticky="nsew")
 
         self.dry_run_var = tk.BooleanVar(value=False)
+        access_key_label = ttk.Label(container, text="Одноразовый ключ доступа:")
+        access_key_label.grid(column=0, row=6, sticky="w", pady=(0, 4))
+
+        self.access_key_var = tk.StringVar()
+        access_key_entry = ttk.Entry(container, textvariable=self.access_key_var, show="*")
+        access_key_entry.grid(column=0, row=7, sticky="ew", pady=(0, 12))
+
+        keys_file_label = ttk.Label(container, text="Файл одноразовых ключей (если не указан в .env):")
+        keys_file_label.grid(column=1, row=6, sticky="w", pady=(0, 4))
+
+        self.keys_file_var = tk.StringVar(value=os.getenv("BROADCAST_KEYS_FILE", ""))
+        keys_file_entry = ttk.Entry(container, textvariable=self.keys_file_var)
+        keys_file_entry.grid(column=1, row=7, sticky="ew", padx=(12, 12), pady=(0, 12))
+
         dry_run_check = ttk.Checkbutton(container, text="Тестовый прогон (без отправки сообщений)", variable=self.dry_run_var)
-        dry_run_check.grid(column=0, row=6, columnspan=2, sticky="w", pady=(12, 0))
+        dry_run_check.grid(column=0, row=8, columnspan=2, sticky="w", pady=(12, 0))
 
         buttons_frame = ttk.Frame(container)
-        buttons_frame.grid(column=2, row=6, sticky="e", pady=(12, 0))
+        buttons_frame.grid(column=2, row=8, sticky="e", pady=(12, 0))
 
         self.start_button = ttk.Button(buttons_frame, text="Запустить", command=self.start_broadcast)
         self.start_button.grid(column=0, row=0, padx=(0, 8))
@@ -100,10 +116,10 @@ class BroadcastApp:
         self.stop_button.state(["disabled"])
 
         logs_label = ttk.Label(container, text="Журнал работы:")
-        logs_label.grid(column=0, row=7, sticky="w", columnspan=3, pady=(16, 4))
+        logs_label.grid(column=0, row=9, sticky="w", columnspan=3, pady=(16, 4))
 
         self.logs_output = ScrolledText(container, height=12, state=tk.DISABLED, wrap=tk.WORD)
-        self.logs_output.grid(column=0, row=8, columnspan=3, sticky="nsew")
+        self.logs_output.grid(column=0, row=10, columnspan=3, sticky="nsew")
 
     # Runtime helpers ----------------------------------------------------------------
     def start_broadcast(self) -> None:
@@ -135,6 +151,13 @@ class BroadcastApp:
             messagebox.showerror("Ошибка", "API ID должно быть числом.")
             return
 
+        access_key = self.access_key_var.get().strip()
+        if not access_key:
+            messagebox.showerror("Ошибка", "Введите одноразовый ключ доступа.")
+            return
+
+        keys_file = self.keys_file_var.get().strip() or None
+
         config = BroadcastConfig(
             message=message,
             folder=folder,
@@ -143,12 +166,15 @@ class BroadcastApp:
             api_id=api_id,
             api_hash=api_hash_value,
             dry_run=self.dry_run_var.get(),
+            access_key=access_key,
+            keys_file=keys_file,
         )
 
         self._append_log("Стартуем рассылку...")
         self.start_button.state(["disabled"])
         self.stop_button.state(["!disabled"])
         self.stop_event = threading.Event()
+        self.access_key_var.set("")
 
         def worker() -> None:
             try:

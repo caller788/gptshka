@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import os
+import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence
 
 # ``python-dotenv`` is optional: if it isn't installed we skip auto-loading ``.env`` files
@@ -29,7 +32,7 @@ from telethon.tl import types
 LogCallback = Callable[[str], None]
 
 
-@dataclass
+@dataclass(slots=True)
 class BroadcastConfig:
     """Input data required to execute a broadcast schedule."""
 
@@ -40,6 +43,8 @@ class BroadcastConfig:
     api_id: Optional[int] = None
     api_hash: Optional[str] = None
     dry_run: bool = False
+    access_key: Optional[str] = None
+    keys_file: Optional[str] = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -84,6 +89,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="List chats that would receive the message without sending anything.",
     )
+    parser.add_argument(
+        "--access-key",
+        help="One-time access key. Defaults to ACCESS_KEY environment variable.",
+    )
+    parser.add_argument(
+        "--keys-file",
+        help="Path to the hashed key store. Defaults to BROADCAST_KEYS_FILE environment variable.",
+    )
     return parser.parse_args()
 
 
@@ -108,6 +121,68 @@ def _resolve_credential(value: str | int | None, env_name: str) -> str:
         raise RuntimeError(
             f"Missing required credential: provide --{env_name.lower()} or set {env_name}"
         ) from exc
+
+
+def _normalise_key_store(path: str | os.PathLike[str]) -> Path:
+    resolved = Path(path).expanduser()
+    if not resolved.exists():
+        raise RuntimeError(
+            "Файл с одноразовыми ключами не найден. Убедитесь, что указали правильный путь",
+        )
+    if not resolved.is_file():
+        raise RuntimeError("Путь к одноразовым ключам должен указывать на файл.")
+    return resolved
+
+
+def _load_hashed_keys(store: Path) -> list[str]:
+    raw_lines = store.read_text(encoding="utf-8").splitlines()
+    cleaned = []
+    for line in raw_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        cleaned.append(stripped)
+    return cleaned
+
+
+def _consume_access_key(
+    access_key: str | None,
+    keys_file: str | os.PathLike[str] | None,
+    logger: LogCallback | None,
+) -> None:
+    if not keys_file:
+        raise RuntimeError(
+            "Не задан путь к файлу одноразовых ключей. Укажите --keys-file или переменную BROADCAST_KEYS_FILE.",
+        )
+
+    store = _normalise_key_store(keys_file)
+
+    if not access_key:
+        raise RuntimeError(
+            "Не указан одноразовый ключ доступа. Добавьте --access-key или переменную ACCESS_KEY.",
+        )
+
+    hashed_key = hashlib.sha256(access_key.encode("utf-8")).hexdigest()
+    keys = _load_hashed_keys(store)
+
+    if hashed_key not in keys:
+        raise RuntimeError("Одноразовый ключ недействителен или уже был использован.")
+
+    keys.remove(hashed_key)
+
+    temp_fd, temp_path = tempfile.mkstemp(dir=str(store.parent), prefix=store.name, suffix=".tmp")
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as handle:
+            if keys:
+                handle.write("\n".join(keys) + "\n")
+        os.replace(temp_path, store)
+    finally:
+        try:
+            os.remove(temp_path)
+        except FileNotFoundError:
+            pass
+
+    _emit(logger, "Одноразовый ключ принят. Продолжаем работу.")
 
 
 async def resolve_folder(client: TelegramClient, folder_title: str):
@@ -310,6 +385,10 @@ async def run_schedule(
 
     delays = _normalise_delays(config.delays)
 
+    effective_keys_file = config.keys_file or os.getenv("BROADCAST_KEYS_FILE")
+    effective_access_key = config.access_key or os.getenv("ACCESS_KEY")
+    _consume_access_key(effective_access_key, effective_keys_file, logger)
+
     async with TelegramClient(config.session, api_id, api_hash) as client:
         dialog_filter = await resolve_folder(client, config.folder)
         chats = await collect_chats(client, dialog_filter)
@@ -348,6 +427,8 @@ def config_from_args(args: argparse.Namespace) -> BroadcastConfig:
         api_id=args.api_id,
         api_hash=args.api_hash,
         dry_run=args.dry_run,
+        access_key=args.access_key,
+        keys_file=args.keys_file,
     )
 
 
